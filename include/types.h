@@ -45,6 +45,29 @@ using Range_3d = Kokkos::MDRangePolicy<Kokkos::Rank<3, Kokkos::Iterate::Right, K
 using Range_4d = Kokkos::MDRangePolicy<Kokkos::Rank<4, Kokkos::Iterate::Right, Kokkos::Iterate::Right>>;
 
 
+// Assert that the following loop carries no dependencies, so the compiler may
+// vectorize it. Spelled differently by every compiler, and #pragma cannot appear in a
+// macro body, hence _Pragma. Note the ordering: clang-based Intel compilers define
+// __clang__, and clang itself defines __GNUC__, so the most specific test comes first.
+//
+// clang's assume_safety is the analogue of GCC's ivdep: vectorize(enable) alone is
+// only a hint and does not assert independence.
+//
+// Because this is an explicit request rather than a hint, clang warns under
+// -Wpass-failed when it cannot honour it. That is signal worth keeping: the solver
+// kernels currently trip it, because each (igpt, icol) thread runs a whole sequential
+// column recurrence and there is nothing left to vectorize across columns.
+#if defined(__INTEL_LLVM_COMPILER) || defined(__INTEL_COMPILER)
+    #define RTE3D_IVDEP _Pragma("ivdep")
+#elif defined(__clang__)
+    #define RTE3D_IVDEP _Pragma("clang loop vectorize(assume_safety)")
+#elif defined(__GNUC__)
+    #define RTE3D_IVDEP _Pragma("GCC ivdep")
+#else
+    #define RTE3D_IVDEP
+#endif
+
+
 // The parallel_for wrappers below bypass MDRangePolicy on CPU. On Serial/OpenMP,
 // MDRangePolicy still adds enough loop-nest overhead to prevent the compiler from
 // vectorizing the inner loop the way a hand-rolled loop nest does, so there we run
@@ -81,7 +104,7 @@ inline void parallel_for_2d(
         Kokkos::RangePolicy<Default_exec>(begin[0], end[0]),
         KOKKOS_LAMBDA(const int j)
         {
-            #pragma GCC ivdep
+            RTE3D_IVDEP
             for (int i=istart; i<iend; ++i)
                 kernel(j, i);
         });
@@ -108,7 +131,7 @@ inline void parallel_for_3d(
         KOKKOS_LAMBDA(const int k)
         {
             for (int j=jstart; j<jend; ++j)
-                #pragma GCC ivdep
+                RTE3D_IVDEP
                 for (int i=istart; i<iend; ++i)
                     kernel(k, j, i);
         });
@@ -138,7 +161,7 @@ inline void parallel_for_4d(
         {
             for (int k=kstart; k<kend; ++k)
                 for (int j=jstart; j<jend; ++j)
-                    #pragma GCC ivdep
+                    RTE3D_IVDEP
                     for (int i=istart; i<iend; ++i)
                         kernel(n, k, j, i);
         });

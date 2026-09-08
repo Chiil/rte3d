@@ -5,6 +5,8 @@ Do NOT use subagents without asking.
 Claude MAY build and run the tests in this repo: `cmake --build build` and
 `pytest tests`. Run them to verify a change, not to browse. Anything else -- a fresh
 cmake configure, a GPU build, network operations -- ask first.
+After creating or changing files, always `git add` them so nothing is left untracked.
+Do not commit unless asked.
 Keep plan concise as possible, ask questions to clarify.
 Use plan mode as default.
 Indent preprocessor lines consistent with code.
