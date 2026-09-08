@@ -21,11 +21,26 @@ that `rte-rrtmgp-cpp` carries.
 Step 1c complete. Build scaffolding and the numpy/Kokkos array plumbing
 (`include/types.h`); the shortwave solvers `sw_solver_noscat` and `sw_solver_2stream`
 (`include/rte_sw.h`); and the longwave `lw_solver_noscat` with multi-angle quadrature
-and the surface-temperature Jacobian (`include/rte_lw.h`). All match the reference to
-~1e-15 relative in double precision. Next: the longwave two-stream solver.
+and the surface-temperature Jacobian and `lw_solver_2stream` (`include/rte_lw.h`). All match the reference to ~1e-15
+relative in double precision. Next: optical-props operations and flux reduction.
 
 Not yet implemented: the approximate-scattering rescaling of Tang et al. 2018
 (`do_rescaling` / `lw_transport_1rescl`); see the note at the top of `src/rte_lw.cpp`.
+
+### Two known defects in the Fortran reference
+
+Both are reproduced or worked around deliberately, and pinned by tests.
+
+- **`lw_solver_2stream` ignores the g-point index of `lev_source`**
+  (`rte-kernels/mo_rte_solver_kernels.F90:422`): the call to `lw_source_2str` passes
+  `lev_source` rather than `lev_source(:,:,igpt)`, so Fortran sequence association
+  hands every g-point the first g-point's slice. `lw_solver_noscat_oneangle:189` does
+  it correctly. Present since the original 2018 import. rte3d does the correct thing;
+  see `test_2stream_reference_bug_gpt_indexing`.
+- **`LW_diff_sec = 1.66` is a single-precision literal** promoted to double, so its
+  value is 1.65999996662139893. rte3d matches it bit-for-bit rather than "fixing" it.
+- **`rte_kernels.h` mis-documents `flux_upJac`** as `(ncol,nlay+1,ngpt)`; the Fortran
+  declares it `(ncol,nlay+1)`, since only broadband Jacobians are provided.
 
 The vertical orientation is handled by `Rte_kernels::Vert<top_at_1>` in
 `include_kernels/rte_solver_kernels.h`. The reference writes every loop out twice, once

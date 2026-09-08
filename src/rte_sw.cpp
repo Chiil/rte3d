@@ -2,6 +2,7 @@
 #include "rte_solver_kernels.h"
 
 using Rte_kernels::Vert;
+using Rte_kernels::adding_column;
 
 
 namespace
@@ -36,79 +37,6 @@ namespace
     }
 
 
-    // Transport of diffuse radiation through a vertically layered atmosphere, after
-    // Shonk and Hogan 2008, doi:10.1175/2007JCLI1940.1 (SH08). Shared by longwave and
-    // shortwave. Reference: adding in mo_rte_solver_kernels.F90.
-    //
-    // Runs entirely inside one (igpt, icol) thread: two sequential sweeps over the
-    // column, so albedo, src and denom are per-column scratch.
-    template<bool top_at_1, typename Albedo, typename Src, typename Denom>
-    KOKKOS_INLINE_FUNCTION
-    void adding_column(
-            const int igpt, const int icol, const int nlay,
-            const TF albedo_sfc,
-            const Array_3d<const TF>& rdif, const Array_3d<const TF>& tdif,
-            const Array_3d<const TF>& src_dn, const Array_3d<const TF>& src_up,
-            const TF src_sfc,
-            const Array_3d<TF>& flux_up, const Array_3d<TF>& flux_dn,
-            const Albedo& albedo, const Src& src, const Denom& denom)
-    {
-        using V = Vert<top_at_1>;
-
-        // Reflectivity to diffuse radiation below this level (alpha in SH08) and the
-        // source of diffuse upwelling radiation (G in SH08) start at the surface.
-        albedo(igpt, V::lev_sfc(nlay), icol) = albedo_sfc;
-        src   (igpt, V::lev_sfc(nlay), icol) = src_sfc;
-
-        // From the surface upward, accumulate albedo and the source of upward radiation.
-        for (int j=0; j<nlay; ++j)
-        {
-            const int ilay = V::lay_from_sfc(j, nlay);
-            const int lev_above = ilay + V::lev_up();
-            const int lev_below = ilay + V::lev_dn();
-
-            const TF rdif_l = rdif(igpt, ilay, icol);
-            const TF tdif_l = tdif(igpt, ilay, icol);
-
-            const TF denom_l = TF(1.) / (TF(1.) - rdif_l * albedo(igpt, lev_below, icol));  // Eq 10
-            denom(igpt, ilay, icol) = denom_l;
-
-            albedo(igpt, lev_above, icol) =
-                    rdif_l + tdif_l*tdif_l * albedo(igpt, lev_below, icol) * denom_l;  // Eq 9
-
-            // Eq 11: upward emission at the top of the layer, plus radiation emitted at
-            // the bottom, transmitted through and reflected from the layers below.
-            src(igpt, lev_above, icol) =
-                    src_up(igpt, ilay, icol)
-                    + tdif_l * denom_l * (src(igpt, lev_below, icol)
-                                          + albedo(igpt, lev_below, icol) * src_dn(igpt, ilay, icol));
-        }
-
-        // Eq 12 at the top of the domain: reflection of the incident diffuse flux plus
-        // emission from below.
-        {
-            const int lev = V::lev_toa(nlay);
-            flux_up(igpt, lev, icol) = flux_dn(igpt, lev, icol) * albedo(igpt, lev, icol)
-                                     + src(igpt, lev, icol);
-        }
-
-        // From the top of the atmosphere downward, compute the fluxes.
-        for (int j=0; j<nlay; ++j)
-        {
-            const int ilay = V::lay_from_toa(j, nlay);
-            const int lev_prev = ilay + V::lev_up();
-            const int lev_dst  = ilay + V::lev_dn();
-
-            flux_dn(igpt, lev_dst, icol) =                                       // Eq 13
-                    (tdif(igpt, ilay, icol) * flux_dn(igpt, lev_prev, icol)
-                     + rdif(igpt, ilay, icol) * src(igpt, lev_dst, icol)
-                     + src_dn(igpt, ilay, icol)) * denom(igpt, ilay, icol);
-
-            flux_up(igpt, lev_dst, icol) =                                       // Eq 12
-                    flux_dn(igpt, lev_dst, icol) * albedo(igpt, lev_dst, icol)
-                    + src(igpt, lev_dst, icol);
-        }
-    }
 }
 
 

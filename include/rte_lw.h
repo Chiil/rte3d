@@ -29,5 +29,17 @@ namespace Rte_lw
             const Array_3d<TF>& flux_dn,         // (ngpt, nlev, ncol)
             const Array_2d<TF>& flux_up_jac);    // (nlev, ncol), may be empty
 
+    // Two-stream solver with scattering. Reference: lw_solver_2stream.
+    void solver_2stream(
+            const bool top_at_1,
+            const Array_3d<const TF>& tau,       // (ngpt, nlay, ncol)
+            const Array_3d<const TF>& ssa,       // (ngpt, nlay, ncol)
+            const Array_3d<const TF>& g,         // (ngpt, nlay, ncol)
+            const Source_func_lw& sources,
+            const Array_2d<const TF>& sfc_emis,  // (ngpt, ncol)
+            const Array_2d<const TF>& inc_flux,  // (ngpt, ncol)
+            const Array_3d<TF>& flux_up,         // (ngpt, nlev, ncol)
+            const Array_3d<TF>& flux_dn);        // (ngpt, nlev, ncol)
+
     void init_python_bindings(py::module_& m);
 }

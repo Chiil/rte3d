@@ -3,6 +3,7 @@
 
 using Rte_kernels::Vert;
 using Rte_kernels::pi;
+using Rte_kernels::adding_column;
 
 
 // The reference's lw_solver_noscat also offers do_rescaling, the approximate treatment
@@ -174,4 +175,102 @@ void Rte_lw::solver_noscat(
     else
         solver_noscat_impl<false>(
                 secants, weights, tau, sources, sfc_emis, inc_flux, flux_up, flux_dn, flux_up_jac);
+}
+
+
+namespace
+{
+    template<bool top_at_1>
+    void solver_2stream_impl(
+            const Array_3d<const TF>& tau,
+            const Array_3d<const TF>& ssa,
+            const Array_3d<const TF>& g,
+            const Source_func_lw& sources,
+            const Array_2d<const TF>& sfc_emis,
+            const Array_2d<const TF>& inc_flux,
+            const Array_3d<TF>& flux_up,
+            const Array_3d<TF>& flux_dn)
+    {
+        using V = Vert<top_at_1>;
+
+        const int ngpt = static_cast<int>(tau.extent(0));
+        const int nlay = static_cast<int>(tau.extent(1));
+        const int ncol = static_cast<int>(tau.extent(2));
+        const int nlev = nlay + 1;
+
+        const Array_3d<const TF> lev_source = sources.lev_source;
+        const Array_2d<const TF> sfc_source = sources.sfc_source;
+
+        Array_3d<TF> Rdif(Kokkos::view_alloc("Rdif", Kokkos::WithoutInitializing), ngpt, nlay, ncol);
+        Array_3d<TF> Tdif(Kokkos::view_alloc("Tdif", Kokkos::WithoutInitializing), ngpt, nlay, ncol);
+        Array_3d<TF> source_up(Kokkos::view_alloc("source_up", Kokkos::WithoutInitializing), ngpt, nlay, ncol);
+        Array_3d<TF> source_dn(Kokkos::view_alloc("source_dn", Kokkos::WithoutInitializing), ngpt, nlay, ncol);
+        Array_3d<TF> albedo(Kokkos::view_alloc("albedo", Kokkos::WithoutInitializing), ngpt, nlev, ncol);
+        Array_3d<TF> src(Kokkos::view_alloc("src", Kokkos::WithoutInitializing), ngpt, nlev, ncol);
+        Array_3d<TF> denom(Kokkos::view_alloc("denom", Kokkos::WithoutInitializing), ngpt, nlay, ncol);
+
+        const Array_3d<const TF> Rdif_c = Rdif;
+        const Array_3d<const TF> Tdif_c = Tdif;
+        const Array_3d<const TF> source_up_c = source_up;
+        const Array_3d<const TF> source_dn_c = source_dn;
+
+        parallel_for_gpt_col("lw_solver_2stream", ngpt, ncol,
+            KOKKOS_LAMBDA(const int igpt, const int icol)
+            {
+                // Cell properties, and the source function for diffuse radiation.
+                for (int ilay=0; ilay<nlay; ++ilay)
+                {
+                    const TF tau_l = tau(igpt, ilay, icol);
+
+                    TF gamma1, gamma2, Rdif_l, Tdif_l;
+                    Rte_kernels::lw_two_stream(
+                            tau_l, ssa(igpt, ilay, icol), g(igpt, ilay, icol),
+                            gamma1, gamma2, Rdif_l, Tdif_l);
+
+                    Rdif(igpt, ilay, icol) = Rdif_l;
+                    Tdif(igpt, ilay, icol) = Tdif_l;
+
+                    TF source_up_l, source_dn_l;
+                    Rte_kernels::lw_source_2str(
+                            lev_source(igpt, ilay + V::lev_up(), icol),
+                            lev_source(igpt, ilay + V::lev_dn(), icol),
+                            gamma1, gamma2, Rdif_l, Tdif_l, tau_l,
+                            source_up_l, source_dn_l);
+
+                    source_up(igpt, ilay, icol) = source_up_l;
+                    source_dn(igpt, ilay, icol) = source_dn_l;
+                }
+
+                const TF emis = sfc_emis(igpt, icol);
+                const TF source_sfc = pi * emis * sfc_source(igpt, icol);
+
+                // Boundary condition on the diffuse downward flux.
+                flux_dn(igpt, V::lev_toa(nlay), icol) = inc_flux(igpt, icol);
+
+                adding_column<top_at_1>(
+                        igpt, icol, nlay,
+                        TF(1.) - emis,
+                        Rdif_c, Tdif_c, source_dn_c, source_up_c, source_sfc,
+                        flux_up, flux_dn,
+                        albedo, src, denom);
+            });
+    }
+}
+
+
+void Rte_lw::solver_2stream(
+        const bool top_at_1,
+        const Array_3d<const TF>& tau,
+        const Array_3d<const TF>& ssa,
+        const Array_3d<const TF>& g,
+        const Source_func_lw& sources,
+        const Array_2d<const TF>& sfc_emis,
+        const Array_2d<const TF>& inc_flux,
+        const Array_3d<TF>& flux_up,
+        const Array_3d<TF>& flux_dn)
+{
+    if (top_at_1)
+        solver_2stream_impl<true>(tau, ssa, g, sources, sfc_emis, inc_flux, flux_up, flux_dn);
+    else
+        solver_2stream_impl<false>(tau, ssa, g, sources, sfc_emis, inc_flux, flux_up, flux_dn);
 }

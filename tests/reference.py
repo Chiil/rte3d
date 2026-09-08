@@ -59,6 +59,12 @@ class Reference:
             ctypes.c_void_p, _f8, _f8,
             ctypes.c_void_p, _f8, _f8]
 
+        lib.rte_lw_solver_2stream.restype = None
+        lib.rte_lw_solver_2stream.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            _f8, _f8, _f8, _f8, _f8, _f8, _f8, _f8,
+            _f8, _f8]
+
     def sw_solver_noscat(self, top_at_1, tau, mu0, inc_flux_dir):
         ngpt, nlay, ncol = tau.shape
         flux_dir = np.zeros((ngpt, nlay+1, ncol), dtype=FLOAT)
@@ -129,3 +135,18 @@ class Reference:
             _bool(False), ssa, g)
 
         return flux_up, flux_dn, (flux_up_jac if do_jacobians else None)
+
+    def lw_solver_2stream(self, top_at_1, tau, ssa, g,
+                          lay_source, lev_source, sfc_emis, sfc_source, inc_flux):
+        ngpt, nlay, ncol = tau.shape
+        nlev = nlay + 1
+
+        flux_up = np.zeros((ngpt, nlev, ncol), dtype=FLOAT)
+        flux_dn = np.zeros((ngpt, nlev, ncol), dtype=FLOAT)
+
+        self.lib.rte_lw_solver_2stream(
+            _int(ncol), _int(nlay), _int(ngpt), _bool(top_at_1),
+            tau, ssa, g, lay_source, lev_source, sfc_emis, sfc_source, inc_flux,
+            flux_up, flux_dn)
+
+        return flux_up, flux_dn

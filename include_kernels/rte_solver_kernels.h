@@ -138,4 +138,147 @@ namespace Rte_kernels
         source_dn = (TF(1.) - trans) * lev_source_dn + TF(2.) * fact * (lay_source - lev_source_dn);
         source_up = (TF(1.) - trans) * lev_source_up + TF(2.) * fact * (lay_source - lev_source_up);
     }
+
+    // Transport of diffuse radiation through a vertically layered atmosphere, after
+    // Shonk and Hogan 2008, doi:10.1175/2007JCLI1940.1 (SH08). Shared by longwave and
+    // shortwave. Reference: adding in mo_rte_solver_kernels.F90.
+    //
+    // Runs entirely inside one (igpt, icol) thread: two sequential sweeps over the
+    // column, so albedo, src and denom are per-column scratch.
+    template<bool top_at_1, typename Albedo, typename Src, typename Denom>
+    KOKKOS_INLINE_FUNCTION
+    void adding_column(
+            const int igpt, const int icol, const int nlay,
+            const TF albedo_sfc,
+            const Array_3d<const TF>& rdif, const Array_3d<const TF>& tdif,
+            const Array_3d<const TF>& src_dn, const Array_3d<const TF>& src_up,
+            const TF src_sfc,
+            const Array_3d<TF>& flux_up, const Array_3d<TF>& flux_dn,
+            const Albedo& albedo, const Src& src, const Denom& denom)
+    {
+        using V = Vert<top_at_1>;
+
+        // Reflectivity to diffuse radiation below this level (alpha in SH08) and the
+        // source of diffuse upwelling radiation (G in SH08) start at the surface.
+        albedo(igpt, V::lev_sfc(nlay), icol) = albedo_sfc;
+        src   (igpt, V::lev_sfc(nlay), icol) = src_sfc;
+
+        // From the surface upward, accumulate albedo and the source of upward radiation.
+        for (int j=0; j<nlay; ++j)
+        {
+            const int ilay = V::lay_from_sfc(j, nlay);
+            const int lev_above = ilay + V::lev_up();
+            const int lev_below = ilay + V::lev_dn();
+
+            const TF rdif_l = rdif(igpt, ilay, icol);
+            const TF tdif_l = tdif(igpt, ilay, icol);
+
+            const TF denom_l = TF(1.) / (TF(1.) - rdif_l * albedo(igpt, lev_below, icol));  // Eq 10
+            denom(igpt, ilay, icol) = denom_l;
+
+            albedo(igpt, lev_above, icol) =
+                    rdif_l + tdif_l*tdif_l * albedo(igpt, lev_below, icol) * denom_l;  // Eq 9
+
+            // Eq 11: upward emission at the top of the layer, plus radiation emitted at
+            // the bottom, transmitted through and reflected from the layers below.
+            src(igpt, lev_above, icol) =
+                    src_up(igpt, ilay, icol)
+                    + tdif_l * denom_l * (src(igpt, lev_below, icol)
+                                          + albedo(igpt, lev_below, icol) * src_dn(igpt, ilay, icol));
+        }
+
+        // Eq 12 at the top of the domain: reflection of the incident diffuse flux plus
+        // emission from below.
+        {
+            const int lev = V::lev_toa(nlay);
+            flux_up(igpt, lev, icol) = flux_dn(igpt, lev, icol) * albedo(igpt, lev, icol)
+                                     + src(igpt, lev, icol);
+        }
+
+        // From the top of the atmosphere downward, compute the fluxes.
+        for (int j=0; j<nlay; ++j)
+        {
+            const int ilay = V::lay_from_toa(j, nlay);
+            const int lev_prev = ilay + V::lev_up();
+            const int lev_dst  = ilay + V::lev_dn();
+
+            flux_dn(igpt, lev_dst, icol) =                                       // Eq 13
+                    (tdif(igpt, ilay, icol) * flux_dn(igpt, lev_prev, icol)
+                     + rdif(igpt, ilay, icol) * src(igpt, lev_dst, icol)
+                     + src_dn(igpt, ilay, icol)) * denom(igpt, ilay, icol);
+
+            flux_up(igpt, lev_dst, icol) =                                       // Eq 12
+                    flux_dn(igpt, lev_dst, icol) * albedo(igpt, lev_dst, icol)
+                    + src(igpt, lev_dst, icol);
+        }
+    }
+
+
+    // Longwave two-stream diffuse reflectance and transmittance for a layer, plus the
+    // coupling coefficients the source function needs. Reference: lw_two_stream.
+    //
+    // The coefficients differ from the shortwave because the phase function is more
+    // isotropic; we follow Fu et al. 1997,
+    // doi:10.1175/1520-0469(1997)054<2799:MSPITI>2.0.CO;2, with a diffusivity secant
+    // of 1.66.
+    KOKKOS_INLINE_FUNCTION
+    void lw_two_stream(
+            const TF tau, const TF w0, const TF g,
+            TF& gamma1, TF& gamma2, TF& Rdif, TF& Tdif)
+    {
+        // The reference writes this as `real(wp), parameter :: LW_diff_sec = 1.66`.
+        // The literal has default (single) real kind and is only then promoted, so its
+        // value is 1.65999996662139893, not 1.66 -- a 2e-8 relative difference. Match
+        // it exactly rather than "fix" it, or every comparison drifts by that much.
+        constexpr TF lw_diff_sec = static_cast<TF>(1.66f);
+
+        gamma1 = lw_diff_sec * (TF(1.) - TF(0.5) * w0 * (TF(1.) + g));  // Fu et al. Eq 2.9
+        gamma2 = lw_diff_sec *           TF(0.5) * w0 * (TF(1.) - g);   // Fu et al. Eq 2.10
+
+        // Eq 18; k = sqrt(gamma1^2 - gamma2^2). Note the floor is a plain 1e-12 here,
+        // not the epsilon-derived min_k the shortwave uses.
+        const TF k = Kokkos::sqrt(Kokkos::max((gamma1 - gamma2) * (gamma1 + gamma2), TF(1.e-12)));
+
+        const TF exp_minusktau = Kokkos::exp(-tau*k);
+        const TF exp_minus2ktau = exp_minusktau * exp_minusktau;
+
+        // Refactored to avoid rounding errors when k and gamma1 differ greatly in magnitude.
+        const TF RT_term = TF(1.) / (k      * (TF(1.) + exp_minus2ktau) +
+                                     gamma1 * (TF(1.) - exp_minus2ktau));
+
+        Rdif = RT_term * gamma2 * (TF(1.) - exp_minus2ktau);  // Eq 25
+        Tdif = RT_term * TF(2.) * k * exp_minusktau;          // Eq 26
+    }
+
+
+    // Longwave source function for upward and downward emission at levels, using the
+    // linear-in-tau assumption. Straight from ECRAD, via Toon et al. (JGR 1989)
+    // Eqs 26-27. Sources come out in flux units, hence the factor of pi.
+    //
+    // lev_source_top and lev_source_bot are the Planck sources at the levels above and
+    // below the layer: ilay + lev_up() and ilay + lev_dn().
+    KOKKOS_INLINE_FUNCTION
+    void lw_source_2str(
+            const TF lev_source_top, const TF lev_source_bot,
+            const TF gamma1, const TF gamma2, const TF rdif, const TF tdif, const TF tau,
+            TF& source_up, TF& source_dn)
+    {
+        if (tau > TF(1.0e-8))
+        {
+            const TF Z = (lev_source_bot - lev_source_top) / (tau * (gamma1 + gamma2));
+
+            const TF Zup_top    =  Z + lev_source_top;
+            const TF Zup_bottom =  Z + lev_source_bot;
+            const TF Zdn_top    = -Z + lev_source_top;
+            const TF Zdn_bottom = -Z + lev_source_bot;
+
+            source_up = pi * (Zup_top    - rdif * Zdn_top    - tdif * Zup_bottom);
+            source_dn = pi * (Zdn_bottom - rdif * Zup_bottom - tdif * Zdn_top);
+        }
+        else
+        {
+            source_up = TF(0.);
+            source_dn = TF(0.);
+        }
+    }
 }
