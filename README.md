@@ -18,10 +18,14 @@ that `rte-rrtmgp-cpp` carries.
 
 ## Status
 
-Step 1b complete. Build scaffolding and the numpy/Kokkos array plumbing
-(`include/types.h`), and the shortwave solvers `sw_solver_noscat` and
-`sw_solver_2stream` (`include/rte_sw.h`), both matching the reference to ~1e-15
-relative in double precision. Next: the longwave no-scattering solver.
+Step 1c complete. Build scaffolding and the numpy/Kokkos array plumbing
+(`include/types.h`); the shortwave solvers `sw_solver_noscat` and `sw_solver_2stream`
+(`include/rte_sw.h`); and the longwave `lw_solver_noscat` with multi-angle quadrature
+and the surface-temperature Jacobian (`include/rte_lw.h`). All match the reference to
+~1e-15 relative in double precision. Next: the longwave two-stream solver.
+
+Not yet implemented: the approximate-scattering rescaling of Tang et al. 2018
+(`do_rescaling` / `lw_transport_1rescl`); see the note at the top of `src/rte_lw.cpp`.
 
 The vertical orientation is handled by `Rte_kernels::Vert<top_at_1>` in
 `include_kernels/rte_solver_kernels.h`. The reference writes every loop out twice, once

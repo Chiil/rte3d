@@ -3,6 +3,7 @@
 #include "types.h"
 #include "runtime.h"
 #include "rte_sw.h"
+#include "rte_lw.h"
 
 
 PYBIND11_MODULE(rte3d_python, m)
@@ -11,4 +12,5 @@ PYBIND11_MODULE(rte3d_python, m)
 
     Runtime::init_python_bindings(m);
     Rte_sw::init_python_bindings(m);
+    Rte_lw::init_python_bindings(m);
 }

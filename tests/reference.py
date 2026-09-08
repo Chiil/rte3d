@@ -49,6 +49,16 @@ class Reference:
             ctypes.c_void_p, _f8,
             ctypes.c_void_p, _f8, _f8, _f8]
 
+        lib.rte_lw_solver_noscat.restype = None
+        lib.rte_lw_solver_noscat.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, _f8, _f8,
+            _f8, _f8, _f8, _f8, _f8, _f8,
+            _f8, _f8,
+            ctypes.c_void_p, _f8, _f8,
+            ctypes.c_void_p, _f8, _f8,
+            ctypes.c_void_p, _f8, _f8]
+
     def sw_solver_noscat(self, top_at_1, tau, mu0, inc_flux_dir):
         ngpt, nlay, ncol = tau.shape
         flux_dir = np.zeros((ngpt, nlay+1, ncol), dtype=FLOAT)
@@ -83,3 +93,39 @@ class Reference:
             _bool(False), *broadband)
 
         return flux_up, flux_dn, flux_dir
+
+    def lw_solver_noscat(self, top_at_1, secants, weights, tau,
+                         lay_source, lev_source, sfc_emis, sfc_source, inc_flux,
+                         sfc_source_jac=None):
+        ngpt, nlay, ncol = tau.shape
+        nlev = nlay + 1
+        nmus = weights.shape[0]
+
+        do_jacobians = sfc_source_jac is not None
+        if not do_jacobians:
+            sfc_source_jac = np.zeros((ngpt, ncol), dtype=FLOAT)
+
+        flux_up = np.zeros((ngpt, nlev, ncol), dtype=FLOAT)
+        flux_dn = np.zeros((ngpt, nlev, ncol), dtype=FLOAT)
+
+        # Note: rte_kernels.h documents flux_upJac as (ncol, nlay+1, ngpt), but the
+        # Fortran declares it (ncol, nlay+1). Only broadband Jacobians are provided.
+        flux_up_jac = np.zeros((nlev, ncol), dtype=FLOAT)
+
+        # Unused when do_broadband is false, but must still be addressable.
+        broadband = [np.zeros((nlev, ncol), dtype=FLOAT) for _ in range(2)]
+
+        # ssa and g are referenced only when do_rescaling is true.
+        ssa = np.zeros((ngpt, nlay, ncol), dtype=FLOAT)
+        g = np.zeros((ngpt, nlay, ncol), dtype=FLOAT)
+
+        self.lib.rte_lw_solver_noscat(
+            _int(ncol), _int(nlay), _int(ngpt), _bool(top_at_1),
+            _int(nmus), secants, weights,
+            tau, lay_source, lev_source, sfc_emis, sfc_source, inc_flux,
+            flux_up, flux_dn,
+            _bool(False), *broadband,
+            _bool(do_jacobians), sfc_source_jac, flux_up_jac,
+            _bool(False), ssa, g)
+
+        return flux_up, flux_dn, (flux_up_jac if do_jacobians else None)

@@ -110,4 +110,32 @@ namespace Rte_kernels
         Rdir = Kokkos::max(TF(0.), Kokkos::min(Rdir, TF(1.) - Tnoscat));
         Tdir = Kokkos::max(TF(0.), Kokkos::min(Tdir, TF(1.) - Tnoscat - Rdir));
     }
+
+    inline constexpr TF pi = TF(3.14159265358979323846);
+
+    // Longwave source function for diffuse radiation, using the linear-in-tau
+    // assumption of Clough et al., 1992, doi:10.1029/92JD01419, Eq 13.
+    //
+    // lev_source_up and lev_source_dn are the Planck sources at the level on the
+    // upward and downward side of the layer, which is what the reference selects with
+    // its source_inc / source_dec pointer swap.
+    KOKKOS_INLINE_FUNCTION
+    void lw_source_noscat(
+            const TF lay_source, const TF lev_source_up, const TF lev_source_dn,
+            const TF tau_loc, const TF trans,
+            TF& source_up, TF& source_dn)
+    {
+        // Weighting factor. Below the threshold the rounding error in the direct form
+        // (~tau^2) is of order epsilon, so use a 3rd order series expansion instead.
+        // Thanks to Peter Blossey (UW) for the idea and Dmitry Alexeev (Nvidia) for
+        // suggesting 3rd order.
+        const TF tau_thresh = Kokkos::sqrt(Kokkos::sqrt(eps));
+
+        const TF fact = tau_loc > tau_thresh
+                ? (TF(1.) - trans)/tau_loc - trans
+                : tau_loc * (TF(0.5) + tau_loc * (TF(-1.)/TF(3.) + tau_loc * TF(1.)/TF(8.)));
+
+        source_dn = (TF(1.) - trans) * lev_source_dn + TF(2.) * fact * (lay_source - lev_source_dn);
+        source_up = (TF(1.) - trans) * lev_source_up + TF(2.) * fact * (lay_source - lev_source_up);
+    }
 }
