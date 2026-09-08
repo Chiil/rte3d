@@ -1,0 +1,11 @@
+build*/
+.venv/
+__pycache__/
+*.pyc
+*.so
+.pytest_cache/
+
+# Local symlinks to the reference implementations, machine-specific.
+rte-rrtmgp
+rte-rrtmgp-cpp
+microhh_simple
